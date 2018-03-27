@@ -25,10 +25,8 @@
 from logging import getLogger
 import time
 
-from serial import Serial
-from serial.serialutil import SerialException
-from serial.tools.list_ports import comports
-
+from serial import Serial, SerialException
+import serial.tools
 
 class ConnectionError(Exception):
 
@@ -42,7 +40,7 @@ class SerialConnection(object):
     def __init__(self, port):
         self._port = port
 
-    def send_command(self, data, read_delay=None):
+    def send_command(self, data, read_delay=1):
         """Write "data" to the port and return the response form it"""
         self._write(data)
         if read_delay:
@@ -60,16 +58,19 @@ class SerialConnection(object):
         self._port.write("\n\r")
 
     def _read(self):
-        response = ""
-        while True:
-            c = self._port.read(1)
-            if not c or c == ">":
-                break
-            if c == "\x00":
-                continue
-            response += c
+        timeout = time.time() + 5
+        response = b""
+        while time.time() < timeout:
+            c = self._port.read(16)
+            if c:
+                timeout += 1
+                response += c
+                if b">" in c:
+                    return response.split(b">")[0].decode()
+            else:
+                time.sleep_ms(100)
 
-        return response
+        return response.decode()
 
 
 class SerialConnectionFactory(object):
@@ -86,7 +87,7 @@ class SerialConnectionFactory(object):
 
     def auto_connect(self, available_ports=None):
         if not available_ports:
-            ports = comports()
+            ports = serial.tools.comports()
             available_ports = [port[0] for port in ports]
 
         connection = None
