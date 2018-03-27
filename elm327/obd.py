@@ -22,8 +22,6 @@
 # SOFTWARE.
 ################################################################################
 
-from logging import getLogger
-
 
 _OBD_RESPONSE_NO_DATA = "NO DATA"
 
@@ -35,46 +33,46 @@ _INT_TO_HEX_WORD_FORMATTER_PRETTY = "{:0=#4x}"
 
 
 class ELMError(Exception):
-
     pass
 
 
 class ValueNotAvailableError(ELMError):
-
     pass
 
 
 class OBDInterface(object):
-
-    _LOGGER = getLogger(__name__ + "OBDInterface")
 
     def __init__(self, connection):
         self._connection = connection
 
         self._unsupported_commands = []
 
-        self._send_command("AT Z")
-        self._send_command("AT E0")
+        self.send_command("AT Z")
+        self.send_command("AT E0")
 
-    def _send_command(self, data, read_delay=None):
+    def send_command(self, data, read_delay=1):
         response = self._connection.send_command(data, read_delay)
-        return response.strip()
+        print(response.replace('\r', '\n').strip())
+        return response
 
-    def read_pcm_value(self, pcm_value_definition, read_delay=None):
+    def read_pcm_value(self, pcm_value_definition, read_delay=1):
         obd_command = pcm_value_definition.command
         if obd_command in self._unsupported_commands:
             raise ValueNotAvailableError()
 
         command_data = ' '.join(obd_command.to_hex_words())
-        response_data = self._send_command(command_data, read_delay)
+        response_data = self.send_command(command_data, read_delay)
+        response_data = response_data.split('\r')
+        for response_d in response_data:
+            try:
+                response = self._make_pcm_value(response_d, pcm_value_definition)
+                if response:
+                    return response
+            except ValueNotAvailableError:
+                self._unsupported_commands.append(obd_command)
+                raise
 
-        try:
-            response = self._make_pcm_value(response_data, pcm_value_definition)
-        except ValueNotAvailableError:
-            self._unsupported_commands.append(obd_command)
-            raise
-
-        return response
+        return None
 
     @staticmethod
     def _make_pcm_value(response_raw, pcm_value_definition):
@@ -85,10 +83,37 @@ class OBDInterface(object):
             raise ValueNotAvailableError()
 
         response_words = _convert_raw_response_to_words(response_raw)
-        raw_data = tuple(response_words[2:])
 
-        pcm_value = pcm_value_definition.parser(raw_data)
-        return pcm_value
+        print(response_words)
+        if response_words[0] == 0x41 and response_words[1] == pcm_value_definition.command.pid:
+            raw_data = tuple(response_words[2:])
+            pcm_value = pcm_value_definition.parser(raw_data)
+            return pcm_value
+
+    def get_dtc(self, pending=False, read_delay=1):
+        response_data = self.send_command("07" if pending else "03", read_delay)
+        response_data = response_data.replace(' ', '').strip()
+        response_data = response_data.split('\r')
+        if response_data == _OBD_RESPONSE_NO_DATA:
+            raise ValueNotAvailableError()
+        codes = set()
+        for response in response_data:
+            if response.startswith('47' if pending else '43'):
+                response = response[2:]
+                while response:
+                    code = response[0:4]
+                    if code != '0000':
+                        codes.add(code)
+                    response = response[4:]
+            else:
+                print(response)
+        return codes
+
+    def clear_dtc(self, read_delay=1):
+        response_data = self.send_command("04", read_delay)
+        if response_data.startswith('44'):
+            return True
+        return False
 
 
 def _convert_raw_response_to_words(raw_response):
